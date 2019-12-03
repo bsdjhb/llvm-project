@@ -1099,6 +1099,52 @@ void InputSectionBase::relocateAlloc(uint8_t *buf, uint8_t *bufEnd) {
       }
       target->relocate(bufLoc, rel, targetVA);
       break;
+    case R_PC:
+      if (config->emachine == EM_RISCV && rel.sym->isUndefWeak() &&
+          !config->isPic) {
+        // Patch addresses of undefined weak symbols to be NULL.
+        if (rel.addend != 0)
+          error(getErrorLocation(bufLoc) +
+                "undefined weak symbol relocation with non-zero addend");
+        uint32_t insn = read32le(bufLoc);
+        switch (type) {
+        case R_RISCV_CALL:
+          // Clear immediate in following jalr.
+          write32le(bufLoc + 4, read32le(bufLoc + 4) & 0x000fffff);
+          LLVM_FALLTHROUGH;
+        case R_RISCV_PCREL_HI20:
+          // Rewrite auipc rd, %pcrel_hi(sym) to lui rd, 0.
+          write32le(bufLoc, (insn & 0x00000f80) | 0x00000037);
+          break;
+        case R_RISCV_JAL:
+          write32le(bufLoc, insn & 0x00000fff);
+          break;
+        case R_RISCV_BRANCH:
+          error(getErrorLocation(bufLoc) +
+                "conditional branch to undefined weak symbol '" +
+                rel.sym->getName() + "'");
+          break;
+        default:
+          error(getErrorLocation(bufLoc) +
+                "unknown RISC-V relocation " + toString(type) +
+                " for undefined weak symbol");
+          break;
+        }
+        break;
+      }
+      target->relocateOne(bufLoc, type, targetVA);
+      break;
+    case R_RISCV_PC_INDIRECT:
+      if (!config->isPic) {
+        const Relocation *hiRel = getRISCVPCRelHi20(rel.sym, rel.addend);
+        if (hiRel && hiRel->type == R_RISCV_PCREL_HI20
+            && hiRel->sym->isUndefWeak() && hiRel->addend == 0) {
+          // Patch addresses of undefined weak symbols to be NULL.
+          targetVA = 0;
+        }
+      }
+      target->relocateOne(bufLoc, type, targetVA);
+      break;
     default:
       target->relocate(bufLoc, rel, targetVA);
       break;
